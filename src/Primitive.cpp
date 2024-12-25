@@ -58,6 +58,8 @@ void Instancer::onBeforeRender() {
 	for (int c = 0; c < instances.size(); c++) {
 		instances[c].primitive->onBeforeRender();
 	}
+
+	//this 50 could be a constant
 	if (instances.size() < 50) {
 		return;
 	}

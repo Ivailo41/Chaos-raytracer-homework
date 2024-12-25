@@ -31,6 +31,7 @@ struct TriangleMesh : Primitive {
 	bool loadFromObj(const std::string &objPath);
 
 	bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override;
+
 	bool intersectTriangle(const Ray& ray, const Triangle &t, Intersection &info);
 };
 

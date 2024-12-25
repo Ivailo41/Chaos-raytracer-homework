@@ -62,6 +62,7 @@ bool TriangleMesh::Triangle::intersect(const Ray& ray, float tMin, float tMax, I
 
 	const vec3 normal = cross(AB, AC).normalized();;
 
+	//if the ray direction is perpendicular to the face normal or goes away from the face we wont hit
 	if (dot(ray.dir, normal) > 0) {
 		return false;
 	}
@@ -73,16 +74,20 @@ bool TriangleMesh::Triangle::intersect(const Ray& ray, float tMin, float tMax, I
 	
 	const float Dcr = - dot(ABcrossAC, D);
 
+	//apperantly this checks if the ray and the face are parallel
 	if (fabs(Dcr) < 1e-12) {
 		return false;
 	}
 
+
+	//this checks if the ray is behind the camera or too far away
 	const float rDcr = 1.f / Dcr;
 	const float gamma = dot(ABcrossAC, H) * rDcr;
 	if (gamma < tMin || gamma > tMax) {
 		return false;
 	}
 
+	//last 3 checks if the intersection is outside the triangle
 	const vec3 HcrossD = cross(H, D);
 	const float lambda2 = dot(HcrossD, AC) * rDcr;
 	if (lambda2 < 0 || lambda2 > 1) {
@@ -236,6 +241,7 @@ bool TriangleMesh::intersect(const Ray& ray, float tMin, float tMax, Intersectio
 	if (!box.testIntersect(ray)) {
 		return false;
 	}
+	//Use the accelerator for the mesh if needed
 	if (accelerator && accelerator->isBuilt()) {
 		return accelerator->intersect(ray, tMin, tMax, intersection);
 	}

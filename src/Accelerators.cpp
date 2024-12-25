@@ -146,11 +146,68 @@ struct KDTree : IntersectionAccelerator {
 
 
 struct BVHTree : IntersectionAccelerator {
-	void addPrimitive(Intersectable *prim) override {}
+
+	struct BVHNode {
+		BBox box;
+		BVHNode* leftChild;
+		BVHNode* rightChild;
+		unsigned firstIndex, primitiveCount; //instead of primitive vector we will store the index of the first primitive in the array 
+											 //and the count of primitives after it that are inside the box
+
+		bool isLeaf() const {
+			return !leftChild && !rightChild;
+		}
+	};
+
+	std::vector<Intersectable*> allPrimitives;
+
+	void addPrimitive(Intersectable *prim) override {
+		allPrimitives.push_back(prim);
+	}
+
 	void clear() override {}
-	void build(Purpose purpose) override {}
-	bool isBuilt() const override { return false; }
-	bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override { return false; }
+
+	void build(Purpose purpose) override {
+	
+		if (purpose == Purpose::Instances) {
+
+			//properties when building a tree for instances
+
+		} else if (purpose == Purpose::Mesh){
+
+			//properties when building a tree for meshes
+		}
+
+		//take the center points of the primitives and store them in array (we have the number of our primitives so dont use a dynamic array)
+		//convert the centers to coordinates in range [0;1] (use Offset function)
+		//scale the floating point number by 2^10 = 1024 which would make it a 10 bit number
+		//store the 3 coordinates in a 32bit variable (10 bits for each coordinate and 2 bits leftover)
+		//radix sort the array with morton codes
+
+		//build LBVHTreelets
+		//take the sorted mortion codes and traverse them linearly by taking the start and end index of primitives inside the same cluster
+		//for each cluster create a structure that holds the index of the first primitive in it, the number of primitives and the allocated treenodes
+		//there is upper limit for the count of treenodes based on the primitives count - 2*N - 1
+		//do multithreaded build of the LBVHTreelets
+		//after getting 16x16x16 grid with treelets finish the BVH with top to bottom SAH build
+		//finally flatten the tree into array for faster traversal
+
+		//gives offset of a point in the range [0;1] in a bounding box (put it inside the BBox class
+		/*Vector3f Offset(Point3f p) const {
+			Vector3f o = p - pMin;
+			if (pMax.x > pMin.x) o.x /= pMax.x - pMin.x;
+			if (pMax.y > pMin.y) o.y /= pMax.y - pMin.y;
+			if (pMax.z > pMin.z) o.z /= pMax.z - pMin.z;
+			return o;
+		}*/
+	}
+	bool isBuilt() const override { 
+		return false; //later return if the root is not nullptr
+	}
+
+	bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override { 
+		return false; //later check 7.3.5 in https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies#fragment-CreateleafmonoBVHBuildNode-0
+	}
 };
 
 AcceleratorPtr makeDefaultAccelerator() {
