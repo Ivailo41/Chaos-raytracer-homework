@@ -172,6 +172,12 @@ void TriangleMesh::Triangle::expandBox(BBox& box) {
 	}
 }
 
+vec3 TriangleMesh::Triangle::getCenter() const 
+{
+	//(p1 + p2 + p3) / 3
+	return (owner->vertices[indices[0]] + owner->vertices[indices[1]] + owner->vertices[indices[2]]) / 3;
+}
+
 void TriangleMesh::onBeforeRender() {
 	if (faces.size() < 50) {
 		return;

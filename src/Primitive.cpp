@@ -54,6 +54,11 @@ void Instancer::Instance::expandBox(BBox &other) {
 	other.add(transformed);
 }
 
+vec3 Instancer::Instance::getCenter() const 
+{
+	return primitive->getCenter() + offset;
+}
+
 void Instancer::onBeforeRender() {
 	for (int c = 0; c < instances.size(); c++) {
 		instances[c].primitive->onBeforeRender();

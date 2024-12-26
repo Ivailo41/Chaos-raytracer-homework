@@ -31,8 +31,11 @@ struct Intersectable {
 	/// @brief Expand given bounding box with all points part of the Intersectable
 	/// @param box [out] - the box to expand
 	virtual void expandBox(BBox &box) = 0;
+	
+	virtual vec3 getCenter() const = 0;
 
 	virtual ~Intersectable() = default;
+
 };
 
 /// Base class for scene object
@@ -51,6 +54,10 @@ struct Primitive : Intersectable {
 	/// @brief Default implementation adding the whole bbox, overriden for special cases
 	void expandBox(BBox &other) override {
 		other.add(box);
+	}
+
+	vec3 getCenter() const override {
+		return (box.max + box.min) / 2;
 	}
 
 	~Primitive() override = default;
@@ -114,6 +121,7 @@ private:
 		bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override;
 		bool boxIntersect(const BBox &other) override;
 		void expandBox(BBox &other) override;
+		vec3 getCenter() const override;
 	};
 	std::vector<Instance> instances;
 

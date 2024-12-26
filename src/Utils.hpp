@@ -327,4 +327,14 @@ struct BBox {
 		}
 		return false;
 	}
+
+	//gives the offset of a point in the range [0;1] inside a bounding box
+	//reference https://www.pbr-book.org/4ed/Geometry_and_Transformations/Bounding_Boxes#Bounds3::Offset
+	vec3 Offset(vec3 p) const {
+		vec3 o = p - min;
+		if (max.x > min.x) o.x /= max.x - min.x;
+		if (max.y > min.y) o.y /= max.y - min.y;
+		if (max.z > min.z) o.z /= max.z - min.z;
+		return o;
+	}
 };
