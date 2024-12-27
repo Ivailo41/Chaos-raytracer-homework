@@ -148,10 +148,8 @@ struct KDTree : IntersectionAccelerator {
 
 struct BVHTree : IntersectionAccelerator {
 
-	unsigned MAX_PRIMS_IN_NODE = 20;
-
 	struct BVHNode {
-		BBox box;
+		BBox bounds;
 		BVHNode* leftChild;
 		BVHNode* rightChild;
 		unsigned firstIndex, primitiveCount; //instead of primitive vector we will store the index of the first primitive in the array 
@@ -159,6 +157,22 @@ struct BVHTree : IntersectionAccelerator {
 
 		bool isLeaf() const {
 			return !leftChild && !rightChild;
+		}
+
+		void initLeaf(unsigned firstIndex, unsigned primitiveCount, BBox bounds) {
+			this->firstIndex = firstIndex;
+			this->primitiveCount = primitiveCount;
+			this->bounds = bounds;
+			leftChild = rightChild = nullptr;
+		}
+
+		void initInterior(BVHNode* leftChild, BVHNode* rightChild) {
+			this->leftChild = leftChild;
+			this->rightChild = rightChild;
+			bounds.add(leftChild->bounds);
+			bounds.add(rightChild->bounds);
+
+			primitiveCount = 0;
 		}
 	};
 
@@ -234,26 +248,26 @@ struct BVHTree : IntersectionAccelerator {
 		}
 	};
 
-	struct MakeMortonCodes : Task {
+	struct GenerateMortonCodes : Task {
 
 		const std::vector<Intersectable*>& allPrimitives;
 		const BBox& primBounds;
 		std::vector<MortonPrimitive>& mortonPrims;
 
-		MakeMortonCodes(const std::vector<Intersectable*>& allPrimitives, const BBox& centerBounds, 
-			std::vector<MortonPrimitive>& mortonPrims) : allPrimitives(allPrimitives), primBounds(centerBounds), mortonPrims(mortonPrims)
-		{
+		GenerateMortonCodes(const std::vector<Intersectable*>& allPrimitives, const BBox& centerBounds, 
+			std::vector<MortonPrimitive>& mortonPrims) : allPrimitives(allPrimitives), primBounds(centerBounds), mortonPrims(mortonPrims) {
+
 			count = allPrimitives.size();
 		}
 
-		void run(int threadIndex, int threadCount) override 
-		{
+		void run(int threadIndex, int threadCount) override {
+
 			const unsigned perThread = count / threadCount;
 			const unsigned first = threadIndex * perThread;
 			const unsigned end = std::min((threadIndex + 1) * perThread, count);
 
-			for (size_t i = first; i < end; i++)
-			{
+			for (size_t i = first; i < end; i++) {
+
 				initMortonFor(i, primBounds, mortonPrims);
 			}
 		}
@@ -263,8 +277,7 @@ struct BVHTree : IntersectionAccelerator {
 		unsigned count;
 
 		//Takes a primitive index and the bounding box of all primitives and writes the primitive's morton code inside the vector
-		void initMortonFor(unsigned i, const BBox& primBounds, std::vector<MortonPrimitive>& mortonPrims)
-		{
+		void initMortonFor(unsigned i, const BBox& primBounds, std::vector<MortonPrimitive>& mortonPrims) {
 
 			//convert the centers to coordinates in range [0;1] (use Offset function)
 			//scale the floating point number by 2^10 = 1024 which would make it a 10 bit number
@@ -281,7 +294,120 @@ struct BVHTree : IntersectionAccelerator {
 		
 	};
 
+	struct GenerateLBVHTreelet : Task {
+
+		const std::vector<Intersectable*>& primitives;
+		std::vector<LBVHTreelet>& treeletsToBuild;
+		const std::vector<MortonPrimitive>& mortonPrims;
+		std::vector<Intersectable*>& orderedPrims;
+		std::atomic<int>* totalNodes;
+
+		GenerateLBVHTreelet(const std::vector<Intersectable*>& primitives, std::vector<LBVHTreelet>& treeletsToBuild,
+							const std::vector<MortonPrimitive>& mortonPrims, std::vector<Intersectable*>& orderedPrims,
+							std::atomic<int>* totalNodes) : primitives(primitives), treeletsToBuild(treeletsToBuild), mortonPrims(mortonPrims), orderedPrims(orderedPrims), totalNodes(totalNodes) {
+			count = treeletsToBuild.size();
+		}
+
+		void run(int threadIndex, int threadCount) override {
+
+			const unsigned perThread = count / threadCount;
+			const unsigned first = threadIndex * perThread;
+			const unsigned end = std::min((threadIndex + 1) * perThread, count);
+
+			std::atomic<int> orderedPrimsOffset(0);
+
+			for (size_t i = first; i < end; i++) {
+
+				int nodesCreated = 0;
+				const int firstBitIndex = 29 - 12;
+				LBVHTreelet& tr = treeletsToBuild[i];
+
+				tr.buildNodes = emitLBVH(tr.buildNodes, primitives, &mortonPrims[tr.startIndex],
+										 tr.primitivesCount, &nodesCreated, orderedPrims, &orderedPrimsOffset, firstBitIndex);
+				*totalNodes += nodesCreated;
+			}
+		}
+
+	private:
+		unsigned count;
+
+		BVHNode* emitLBVH(BVHNode*& buildNodes, const std::vector<Intersectable*>& primitives,
+			const MortonPrimitive* mortonPrims, int primitivesCount, int* totalNodes, std::vector<Intersectable*>& orderedPrims,
+			std::atomic<int>* orderedPrimsOffset, int bitIndex) {
+
+			//if we reach the end of the indices or the primitives are less than the max count for a leaf, we create a leaf
+			if (bitIndex == -1 || primitivesCount < 20) { // CHANGE THE 20 TO MAX_NODES_IN_NODE
+
+				++*totalNodes;
+				BVHNode* node = buildNodes++;
+				BBox bounds;
+				int firstPrimOffset = orderedPrimsOffset->fetch_add(primitivesCount);
+
+				//When creating a leaf store its primitives continuous in the ordered array so they can be loaded at once in the CPU cache
+				for (int i = 0; i < primitivesCount; ++i) {
+					int primitiveIndex = mortonPrims[i].primIndex;
+					orderedPrims[firstPrimOffset + i] = primitives[primitiveIndex];
+					bounds.add(primitives[primitiveIndex]->getCenter()); //NEED PRIMITIVE BOUND AND NOT CENTER!!!!!!!!!!!
+				}
+
+				node->initLeaf(firstPrimOffset, primitivesCount, bounds);
+				return node;
+			}
+			else {
+				int mask = 1 << bitIndex;
+
+				//if all the primitives have the same bit at bitIndex, that means that all primitives are on the same side of the splitting plane
+				//and we proceed without making an empty node
+				if ((mortonPrims[0].mortonCode & mask) == (mortonPrims[primitivesCount - 1].mortonCode & mask)) {
+					return emitLBVH(buildNodes, primitives, mortonPrims, primitivesCount, totalNodes, orderedPrims, orderedPrimsOffset, bitIndex - 1);
+				}
+
+				//if we have primitives on both sides, search for the index where the i-th bit is different from the i+1-th bit
+				unsigned splitOffset = findSplitOffset(primitivesCount, mortonPrims, mask);
+				++splitOffset;
+
+				//recursively create node for the first to splitOffset primitives and node for the rest
+				(*totalNodes)++;
+				BVHNode* node = buildNodes++;
+				BVHNode* leftChild = emitLBVH(buildNodes, primitives, mortonPrims, splitOffset, totalNodes, orderedPrims, orderedPrimsOffset, bitIndex - 1);
+				BVHNode* rightChild = emitLBVH(buildNodes, primitives, &mortonPrims[splitOffset], primitivesCount - splitOffset, totalNodes, orderedPrims, orderedPrimsOffset, bitIndex - 1);
+				int axis = bitIndex % 3;
+				node->initInterior(leftChild, rightChild); //need to include axis
+				return node;
+			}
+
+		}
+
+		//binary search to find the i-th primitive where the masked bit differes from the i+1-th primitive
+		unsigned findSplitOffset(unsigned primCount, const MortonPrimitive* mortonPrims, int mask)
+		{
+			unsigned first = 0;
+			unsigned last = primCount - 1;
+
+			while((last - first) > 1)
+			{
+				unsigned half = (last - first) / 2;
+
+				if ((mortonPrims[first].mortonCode & mask) == (mortonPrims[first + half].mortonCode & mask))
+				{
+					first = first + half;
+				}
+				else
+				{
+					last = first + half;
+				}
+			}
+
+			return first;
+		}
+	};
+
+
+	unsigned MAX_PRIMS_IN_NODE = 20;
 	std::vector<Intersectable*> allPrimitives;
+	BVHNode* root = nullptr;
+
+	std::atomic<int> totalNodes{0};
 
 	void addPrimitive(Intersectable *prim) override {
 		allPrimitives.push_back(prim);
@@ -316,14 +442,8 @@ struct BVHTree : IntersectionAccelerator {
 
 		//initialize the array that will hold the morton codes of the primitives
 		unsigned primCount = allPrimitives.size();
-		std::vector<unsigned> primIndices(primCount);
+		std::vector<Intersectable*> orderedPrims(primCount);
 		std::vector<MortonPrimitive> mortonPrims(primCount);
-
-		//initialize array of the primitive indices
-		for (size_t i = 0; i < primCount; i++)
-		{
-			primIndices[i] = i;
-		}
 
 		//get the bounding box of all centers
 		BBox centersBBox;
@@ -332,10 +452,8 @@ struct BVHTree : IntersectionAccelerator {
 			centersBBox.add(allPrimitives[i]->getCenter());
 		}
 
-		//wanted to use parallel for each here but there are some issues
-		//std::for_each(primIndices.begin(), primIndices.end(), [&](unsigned i) { initMortonFor(i, centersBBox, mortonPrims); });
-
-		MakeMortonCodes mortonTask(allPrimitives, centersBBox, mortonPrims);
+		//Generate morton codes from the primitives using multithreading
+		GenerateMortonCodes mortonTask(allPrimitives, centersBBox, mortonPrims);
 		mortonTask.runOn(tm);
 
 		//radix sort the array with morton codes
@@ -360,18 +478,11 @@ struct BVHTree : IntersectionAccelerator {
 			}
 		}
 
-		//Create LBVHs from the Treelets (Could be parallel)
-		for (size_t i = 0; i < treeletsToBuild.size(); i++)
-		{
-			int nodesCreated = 0;
-			const int firstBitIndex = 29 - 12;
-			LBVHTreelet& tr = treeletsToBuild[i];
+		//Create LBVHs from the Treelets with multithreading
+		GenerateLBVHTreelet treeletTask(allPrimitives, treeletsToBuild, mortonPrims, orderedPrims, &totalNodes);
+		treeletTask.runOn(tm);
 
-			tr.buildNodes = emitLBVH(tr.buildNodes, allPrimitives, &mortonPrims[tr.startIndex], tr.primitivesCount, &nodesCreated, firstBitIndex);
-		}
-
-		//do multithreaded build of the LBVHTreelets
-
+		int dummy = 0;
 		//after getting 16x16x16 grid with treelets finish the BVH with top to bottom SAH build
 
 		//finally flatten the tree into array for faster traversal
@@ -379,38 +490,15 @@ struct BVHTree : IntersectionAccelerator {
 		//printf(" done in %lldms, nodes %d, depth %d, %d leaf size\n", timer.toMs(timer.elapsedNs()), nodes, depth, leafSize);
 		tm.stop();
 	}
+
 	bool isBuilt() const override { 
-		return false; //later return if the root is not nullptr
+		return root != nullptr;
 	}
 
 	bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override { 
 		return false; //later check 7.3.5 in https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies#fragment-CreateleafmonoBVHBuildNode-0
 	}
 
-private:
-
-	BVHNode* emitLBVH(BVHNode*& buildNodes, const std::vector<Intersectable*>& bvhPrimitives, MortonPrimitive* mortonPrims,
-		int nPrimitives, int* totalNodes, int bitIndex) {
-
-		if (bitIndex == -1 || nPrimitives < MAX_PRIMS_IN_NODE) {
-
-			//init leaf
-		}
-		else {
-			int mask = 1 << bitIndex;
-
-			//check if the first and the last morton codes have the same bit which would mean that all primitives are on the same side of the splitting plane
-			//if so proceed to the next bit creating a node
-			if ((mortonPrims[0].mortonCode & mask) == (mortonPrims[nPrimitives - 1].mortonCode & mask))
-				return emitLBVH(buildNodes, bvhPrimitives, mortonPrims, nPrimitives, totalNodes, bitIndex - 1);
-
-			//if there are primitives on theboth sides then we do a binary search to get the point where the bit goes from 0 to 1
-			/*int splitOffset = FindInterval(nPrimitives, [&](int index) {
-				return ((mortonPrims[0].mortonCode & mask) == (mortonPrims[index].mortonCode & mask));
-				});
-			++splitOffset;*/
-		}
-	}
 };
 
 AcceleratorPtr makeDefaultAccelerator() {
