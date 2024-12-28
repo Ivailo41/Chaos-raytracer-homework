@@ -342,17 +342,16 @@ struct BVHTree : IntersectionAccelerator {
 				++*totalNodes;
 				BVHNode* node = buildNodes++;
 				BBox bounds;
-				int firstPrimOffset = orderedPrimsOffset->fetch_add(primitivesCount);
+				int firstIndex = orderedPrimsOffset->fetch_add(primitivesCount);
 
 				//When creating a leaf store its primitives continuous in the ordered array so they can be loaded at once in the CPU cache
 				for (int i = 0; i < primitivesCount; ++i) {
 					int primitiveIndex = mortonPrims[i].primIndex;
-					orderedPrims[firstPrimOffset + i] = primitives[primitiveIndex];
+					orderedPrims[firstIndex + i] = primitives[primitiveIndex];
 					primitives[primitiveIndex]->expandBox(bounds);
-					//bounds.add(primitives[primitiveIndex]->getCenter()); //NEED PRIMITIVE BOUND AND NOT CENTER!!!!!!!!!!!
 				}
 
-				node->initLeaf(firstPrimOffset, primitivesCount, bounds);
+				node->initLeaf(firstIndex, primitivesCount, bounds);
 				return node;
 			}
 			else {
@@ -404,9 +403,23 @@ struct BVHTree : IntersectionAccelerator {
 		}
 	};
 
+	struct LinearBVHNode {
+		BBox bounds;
+		unsigned primOffset;
+		unsigned secondChildOffset;
+
+		unsigned primitiveCount;
+	};
+
 	unsigned MAX_PRIMS_IN_NODE = 20;
 	std::vector<Intersectable*> allPrimitives;
+
+	//keeping track of allocated memory, remove it if possible
+	std::vector<BVHNode*> allocatedNodes;
+	unsigned allocatedArrays = 0;
+
 	BVHNode* root = nullptr;
+	LinearBVHNode* nodes = nullptr;
 
 	std::atomic<int> totalNodes{0};
 	std::atomic<int> orderedPrimsOffset{0};
@@ -415,7 +428,19 @@ struct BVHTree : IntersectionAccelerator {
 		allPrimitives.push_back(prim);
 	}
 
-	void clear() override {}
+	void clear() override {
+		for (size_t i = 0; i < allocatedArrays; i++)
+		{
+			delete[] allocatedNodes[i];
+		}
+
+		for (size_t i = allocatedArrays; i < allocatedNodes.size(); i++)
+		{
+			delete allocatedNodes[i];
+		}
+
+		delete[] nodes;
+	}
 
 	void build(Purpose purpose) override {
 	
@@ -431,6 +456,7 @@ struct BVHTree : IntersectionAccelerator {
 
 			//properties when building a tree for instances
 			treePurpose = "Instances";
+			MAX_PRIMS_IN_NODE = 5;
 
 		} else if (purpose == Purpose::Mesh){
 
@@ -490,10 +516,21 @@ struct BVHTree : IntersectionAccelerator {
 			finishedTreelets[i] = treeletsToBuild[i].buildNodes;
 		}
 
+		allocatedNodes = finishedTreelets;
+		allocatedArrays = finishedTreelets.size();
+
 		//after getting 16x16x16 grid with treelets finish the BVH with top to bottom SAH build
 		root = buildTopToBottomSAH(finishedTreelets, 0, finishedTreelets.size() - 1);
 
+		//make the ordered primitives the main array for primitives and remove the other one
+		allPrimitives.swap(orderedPrims);
+		orderedPrims.resize(0);
+		orderedPrims.shrink_to_fit();
+
 		//finally flatten the tree into array for faster traversal
+		nodes = new LinearBVHNode[totalNodes];
+		unsigned offset = 0;
+		flattenBVH(root, offset);
 
 		printf(" done in %lldms, nodes %d\n", timer.toMs(timer.elapsedNs()), (unsigned)totalNodes);
 		tm.stop();
@@ -504,7 +541,13 @@ struct BVHTree : IntersectionAccelerator {
 	}
 
 	bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override { 
-		return false; //later check 7.3.5 in https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies#fragment-CreateleafmonoBVHBuildNode-0
+		//later check 7.3.5 in https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies#fragment-CreateleafmonoBVHBuildNode-0
+
+		if(!nodes->bounds.testIntersect(ray)) {
+			return false;
+		}
+
+		return false;
 	}
 
 private:
@@ -603,6 +646,7 @@ private:
 
 		//create a new node that will hold the set of nodes from startIndx to endIndx
 		BVHNode* node = new BVHNode;
+		allocatedNodes.push_back(node);
 		++totalNodes;
 
 		//get bounds of the nodes
@@ -640,6 +684,23 @@ private:
 			node->initInterior(leftChild, rightChild);
 		}
 		
+	}
+
+	unsigned flattenBVH(BVHNode* node, unsigned& offset) { 
+		LinearBVHNode* linearNode = &nodes[offset];
+		linearNode->bounds = node->bounds;
+		unsigned nodeOffset = offset++;
+
+		if(node->primitiveCount > 0) {
+			linearNode->primOffset = node->firstIndex;
+			linearNode->primitiveCount = node->primitiveCount;
+		}
+		else {
+			linearNode->primitiveCount = 0;
+			flattenBVH(node->leftChild, offset);
+			linearNode->secondChildOffset = flattenBVH(node->rightChild, offset);
+		}
+		return nodeOffset;
 	}
 
 };
