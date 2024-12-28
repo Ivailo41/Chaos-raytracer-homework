@@ -337,4 +337,19 @@ struct BBox {
 		if (max.z > min.z) o.z /= max.z - min.z;
 		return o;
 	}
+
+	vec3 getCenter() const {
+		return (min + max) / 2;
+	}
+
+	float getVolume() const {
+		return (max.x - min.x) * (max.y - min.y) * (max.z - min.z);
+	}
+
+	char getLongestSide() const {
+		float maxSide = std::max((max.x - min.x), std::max((max.y - min.y), (max.z - min.z)));
+		if (maxSide == (max.x - min.x)) return 0;
+		if (maxSide == (max.y - min.y)) return 1;
+		if (maxSide == (max.z - min.z)) return 2;
+	}
 };

@@ -300,11 +300,16 @@ struct BVHTree : IntersectionAccelerator {
 		std::vector<LBVHTreelet>& treeletsToBuild;
 		const std::vector<MortonPrimitive>& mortonPrims;
 		std::vector<Intersectable*>& orderedPrims;
+		std::atomic<int>* orderedPrimsOffset;
 		std::atomic<int>* totalNodes;
+
+		const unsigned MAX_PRIMS_IN_LEAF;
 
 		GenerateLBVHTreelet(const std::vector<Intersectable*>& primitives, std::vector<LBVHTreelet>& treeletsToBuild,
 							const std::vector<MortonPrimitive>& mortonPrims, std::vector<Intersectable*>& orderedPrims,
-							std::atomic<int>* totalNodes) : primitives(primitives), treeletsToBuild(treeletsToBuild), mortonPrims(mortonPrims), orderedPrims(orderedPrims), totalNodes(totalNodes) {
+							std::atomic<int>* orderedPrimsOffset, std::atomic<int>* totalNodes, const unsigned MAX_PRIMS_IN_LEAF)
+							: primitives(primitives), treeletsToBuild(treeletsToBuild), mortonPrims(mortonPrims), orderedPrims(orderedPrims), 
+							  orderedPrimsOffset(orderedPrimsOffset), totalNodes(totalNodes), MAX_PRIMS_IN_LEAF(MAX_PRIMS_IN_LEAF) {
 			count = treeletsToBuild.size();
 		}
 
@@ -314,16 +319,13 @@ struct BVHTree : IntersectionAccelerator {
 			const unsigned first = threadIndex * perThread;
 			const unsigned end = std::min((threadIndex + 1) * perThread, count);
 
-			std::atomic<int> orderedPrimsOffset(0);
-
 			for (size_t i = first; i < end; i++) {
 
 				int nodesCreated = 0;
 				const int firstBitIndex = 29 - 12;
 				LBVHTreelet& tr = treeletsToBuild[i];
 
-				tr.buildNodes = emitLBVH(tr.buildNodes, primitives, &mortonPrims[tr.startIndex],
-										 tr.primitivesCount, &nodesCreated, orderedPrims, &orderedPrimsOffset, firstBitIndex);
+				tr.buildNodes = emitLBVH(tr.buildNodes, &mortonPrims[tr.startIndex], tr.primitivesCount, &nodesCreated, orderedPrimsOffset, firstBitIndex);
 				*totalNodes += nodesCreated;
 			}
 		}
@@ -331,12 +333,11 @@ struct BVHTree : IntersectionAccelerator {
 	private:
 		unsigned count;
 
-		BVHNode* emitLBVH(BVHNode*& buildNodes, const std::vector<Intersectable*>& primitives,
-			const MortonPrimitive* mortonPrims, int primitivesCount, int* totalNodes, std::vector<Intersectable*>& orderedPrims,
-			std::atomic<int>* orderedPrimsOffset, int bitIndex) {
+		BVHNode* emitLBVH(BVHNode*& buildNodes, const MortonPrimitive* mortonPrims, int primitivesCount, int* totalNodes,
+						  std::atomic<int>* orderedPrimsOffset, int bitIndex) {
 
 			//if we reach the end of the indices or the primitives are less than the max count for a leaf, we create a leaf
-			if (bitIndex == -1 || primitivesCount < 20) { // CHANGE THE 20 TO MAX_NODES_IN_NODE
+			if (bitIndex == -1 || primitivesCount < MAX_PRIMS_IN_LEAF) {
 
 				++*totalNodes;
 				BVHNode* node = buildNodes++;
@@ -347,7 +348,8 @@ struct BVHTree : IntersectionAccelerator {
 				for (int i = 0; i < primitivesCount; ++i) {
 					int primitiveIndex = mortonPrims[i].primIndex;
 					orderedPrims[firstPrimOffset + i] = primitives[primitiveIndex];
-					bounds.add(primitives[primitiveIndex]->getCenter()); //NEED PRIMITIVE BOUND AND NOT CENTER!!!!!!!!!!!
+					primitives[primitiveIndex]->expandBox(bounds);
+					//bounds.add(primitives[primitiveIndex]->getCenter()); //NEED PRIMITIVE BOUND AND NOT CENTER!!!!!!!!!!!
 				}
 
 				node->initLeaf(firstPrimOffset, primitivesCount, bounds);
@@ -359,7 +361,7 @@ struct BVHTree : IntersectionAccelerator {
 				//if all the primitives have the same bit at bitIndex, that means that all primitives are on the same side of the splitting plane
 				//and we proceed without making an empty node
 				if ((mortonPrims[0].mortonCode & mask) == (mortonPrims[primitivesCount - 1].mortonCode & mask)) {
-					return emitLBVH(buildNodes, primitives, mortonPrims, primitivesCount, totalNodes, orderedPrims, orderedPrimsOffset, bitIndex - 1);
+					return emitLBVH(buildNodes, mortonPrims, primitivesCount, totalNodes, orderedPrimsOffset, bitIndex - 1);
 				}
 
 				//if we have primitives on both sides, search for the index where the i-th bit is different from the i+1-th bit
@@ -369,8 +371,8 @@ struct BVHTree : IntersectionAccelerator {
 				//recursively create node for the first to splitOffset primitives and node for the rest
 				(*totalNodes)++;
 				BVHNode* node = buildNodes++;
-				BVHNode* leftChild = emitLBVH(buildNodes, primitives, mortonPrims, splitOffset, totalNodes, orderedPrims, orderedPrimsOffset, bitIndex - 1);
-				BVHNode* rightChild = emitLBVH(buildNodes, primitives, &mortonPrims[splitOffset], primitivesCount - splitOffset, totalNodes, orderedPrims, orderedPrimsOffset, bitIndex - 1);
+				BVHNode* leftChild = emitLBVH(buildNodes, mortonPrims, splitOffset, totalNodes, orderedPrimsOffset, bitIndex - 1);
+				BVHNode* rightChild = emitLBVH(buildNodes, &mortonPrims[splitOffset], primitivesCount - splitOffset, totalNodes, orderedPrimsOffset, bitIndex - 1);
 				int axis = bitIndex % 3;
 				node->initInterior(leftChild, rightChild); //need to include axis
 				return node;
@@ -402,12 +404,12 @@ struct BVHTree : IntersectionAccelerator {
 		}
 	};
 
-
 	unsigned MAX_PRIMS_IN_NODE = 20;
 	std::vector<Intersectable*> allPrimitives;
 	BVHNode* root = nullptr;
 
 	std::atomic<int> totalNodes{0};
+	std::atomic<int> orderedPrimsOffset{0};
 
 	void addPrimitive(Intersectable *prim) override {
 		allPrimitives.push_back(prim);
@@ -437,7 +439,7 @@ struct BVHTree : IntersectionAccelerator {
 			MAX_PRIMS_IN_NODE = 20;
 		}
 
-		printf("Building%s oct tree with %d primitives... ", treePurpose, int(allPrimitives.size()));
+		printf("Building%s BVH tree with %d primitives... ", treePurpose, int(allPrimitives.size()));
 		Timer timer;
 
 		//initialize the array that will hold the morton codes of the primitives
@@ -479,15 +481,21 @@ struct BVHTree : IntersectionAccelerator {
 		}
 
 		//Create LBVHs from the Treelets with multithreading
-		GenerateLBVHTreelet treeletTask(allPrimitives, treeletsToBuild, mortonPrims, orderedPrims, &totalNodes);
+		GenerateLBVHTreelet treeletTask(allPrimitives, treeletsToBuild, mortonPrims, orderedPrims, &orderedPrimsOffset, &totalNodes, MAX_PRIMS_IN_NODE);
 		treeletTask.runOn(tm);
 
-		int dummy = 0;
+		std::vector<BVHNode*> finishedTreelets(treeletsToBuild.size());
+		for (size_t i = 0; i < treeletsToBuild.size(); i++)
+		{
+			finishedTreelets[i] = treeletsToBuild[i].buildNodes;
+		}
+
 		//after getting 16x16x16 grid with treelets finish the BVH with top to bottom SAH build
+		root = buildTopToBottomSAH(finishedTreelets, 0, finishedTreelets.size() - 1);
 
 		//finally flatten the tree into array for faster traversal
 
-		//printf(" done in %lldms, nodes %d, depth %d, %d leaf size\n", timer.toMs(timer.elapsedNs()), nodes, depth, leafSize);
+		printf(" done in %lldms, nodes %d\n", timer.toMs(timer.elapsedNs()), (unsigned)totalNodes);
 		tm.stop();
 	}
 
@@ -497,6 +505,141 @@ struct BVHTree : IntersectionAccelerator {
 
 	bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override { 
 		return false; //later check 7.3.5 in https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies#fragment-CreateleafmonoBVHBuildNode-0
+	}
+
+private:
+
+	struct BVHSplitBucket {
+		unsigned count = 0;
+		BBox bounds;
+	};
+
+	void partitionPrimitivesWithSAH(std::vector<BVHNode*>& bvhNodes, unsigned startIndx, unsigned endIndx, const BBox& centersBounds, char splitAxis, unsigned mid)
+	{
+		unsigned nodeCount = (endIndx - startIndx) + 1;
+
+		if (nodeCount == 2) {
+			//partitioning the elements into equally sized subsets, the nth_element works for O(n) time so it would be the same as doing a for loop
+			//but the code can be reused for partitioning bigger arrays
+
+			mid = startIndx;
+			if(bvhNodes[startIndx]->bounds.getCenter()[splitAxis] > bvhNodes[endIndx]->bounds.getCenter()[splitAxis])
+			{
+				std::swap(bvhNodes[startIndx], bvhNodes[endIndx]);
+			}
+
+			/*mid = startIndx + nodeCount / 2;
+			std::nth_element(bvhNodes[startIndx], bvhNodes[startIndx + mid], bvhNodes[endIndx], 
+				[splitAxis](const BVHNode& a, const BVHNode& b) { return a.bounds.getCenter()[splitAxis] < a.bounds.getCenter()[splitAxis]; });*/
+		}
+		else {
+			//initialize buckets with which we will check the best splitting position
+			constexpr unsigned BUCKET_COUNT = 12;
+			BVHSplitBucket buckets[BUCKET_COUNT];
+
+			for (size_t i = startIndx; i < endIndx + 1; i++) {
+				unsigned boxIndex = BUCKET_COUNT * centersBounds.Offset(bvhNodes[i]->bounds.getCenter())[splitAxis];
+				if (boxIndex == BUCKET_COUNT) {
+					boxIndex = BUCKET_COUNT - 1;
+				}
+				buckets[boxIndex].count++;
+				buckets[boxIndex].bounds.add(bvhNodes[i]->bounds);
+			}
+
+			//get the cost for splitting after each bucket without the last one
+			constexpr unsigned SPLITS = BUCKET_COUNT - 1;
+			float costs[SPLITS] = {};
+
+			unsigned countBelow = 0;
+			BBox boundsBelow;
+
+			for (size_t i = 0; i < SPLITS; i++) {
+				boundsBelow.add(buckets[i].bounds);
+				countBelow += buckets[i].count;
+				costs[i] += countBelow * boundsBelow.getVolume();
+			}
+
+			unsigned countAbove = 0;
+			BBox boundsAbove;
+
+			for (size_t i = SPLITS; i >= 1; i--) {
+				boundsAbove.add(buckets[i].bounds);
+				countAbove += buckets[i].count;
+				costs[i - 1] += countAbove * boundsAbove.getVolume();
+			}
+
+			//find bucket with minimum cost to split at
+			int minCostBucket = -1;
+			float minCost = INFINITY;
+
+			for (size_t i = 0; i < SPLITS; i++) {
+				if(costs[i] < minCost) {
+					minCost = costs[i];
+					minCostBucket = i;
+				}
+			}
+
+			float leafCost = nodeCount;
+			minCost = 1.f / 2.f + minCost / centersBounds.getVolume();
+
+			if(nodeCount > 1) {
+				auto midNode = std::partition(bvhNodes.begin() + startIndx, bvhNodes.begin() + endIndx, [=](BVHNode* node) {
+					int bucket = BUCKET_COUNT * centersBounds.Offset(node->bounds.getCenter())[splitAxis];
+					if (bucket == BUCKET_COUNT) bucket = BUCKET_COUNT - 1;
+					return bucket <= minCostBucket;
+					});
+				mid = midNode - bvhNodes.begin();
+			}
+			//this might not get through as the nodeCount is checked before calling the function
+			else {
+				mid = startIndx;
+			}
+		}
+	}
+
+	BVHNode* buildTopToBottomSAH(std::vector<BVHNode*>& bvhNodes, unsigned startIndx, unsigned endIndx) {
+
+		unsigned nodeCount = (endIndx - startIndx) + 1;
+
+		//create a new node that will hold the set of nodes from startIndx to endIndx
+		BVHNode* node = new BVHNode;
+		++totalNodes;
+
+		//get bounds of the nodes
+		BBox bounds;
+		for (size_t i = startIndx; i < endIndx + 1; i++) {
+			bounds.add(bvhNodes[i]->bounds);
+		}
+
+		//if nodes size is 1 make a leaf
+		if (nodeCount <= 1) {
+			return bvhNodes[startIndx]; 
+			//if nodeCount is 1 that would mean that start and end indices are the same, so doesn't matter which we return
+		}
+		else {
+		//get the bounds of the node centers and choose a split axis based on the largest dimention
+			BBox centerBounds;
+			for (size_t i = startIndx; i < endIndx + 1; i++)
+			{
+				centerBounds.add(bvhNodes[i]->bounds.getCenter());
+			}
+			char splitAxis = centerBounds.getLongestSide();
+
+			unsigned mid = startIndx + nodeCount / 2;
+
+			//rearanges the bvhNodes based on the chosen mid and modifies the mid value
+			partitionPrimitivesWithSAH(bvhNodes, startIndx, endIndx, centerBounds, splitAxis, mid);
+
+			//initialize both child nodes and call parallel recursion
+			BVHNode* leftChild = nullptr;
+			BVHNode* rightChild = nullptr;
+
+			leftChild = buildTopToBottomSAH(bvhNodes, startIndx, mid - 1);
+			rightChild = buildTopToBottomSAH(bvhNodes, mid, endIndx);
+
+			node->initInterior(leftChild, rightChild);
+		}
+		
 	}
 
 };
