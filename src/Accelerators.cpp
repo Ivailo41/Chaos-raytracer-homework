@@ -152,7 +152,8 @@ struct BVHTree : IntersectionAccelerator {
 		BBox bounds;
 		BVHNode* leftChild;
 		BVHNode* rightChild;
-		unsigned firstIndex, primitiveCount; //instead of primitive vector we will store the index of the first primitive in the array 
+		char splitAxis;
+		unsigned firstIndex, primitiveCount = 0; //instead of primitive vector we will store the index of the first primitive in the array 
 											 //and the count of primitives after it that are inside the box
 
 		bool isLeaf() const {
@@ -166,7 +167,8 @@ struct BVHTree : IntersectionAccelerator {
 			leftChild = rightChild = nullptr;
 		}
 
-		void initInterior(BVHNode* leftChild, BVHNode* rightChild) {
+		void initInterior(char splitAxis, BVHNode* leftChild, BVHNode* rightChild) {
+			this->splitAxis = splitAxis;
 			this->leftChild = leftChild;
 			this->rightChild = rightChild;
 			bounds.add(leftChild->bounds);
@@ -351,6 +353,12 @@ struct BVHTree : IntersectionAccelerator {
 					primitives[primitiveIndex]->expandBox(bounds);
 				}
 
+				//DEBUG
+				if(bounds.isEmpty())
+				{
+					int dummy;
+				}
+
 				node->initLeaf(firstIndex, primitivesCount, bounds);
 				return node;
 			}
@@ -373,7 +381,7 @@ struct BVHTree : IntersectionAccelerator {
 				BVHNode* leftChild = emitLBVH(buildNodes, mortonPrims, splitOffset, totalNodes, orderedPrimsOffset, bitIndex - 1);
 				BVHNode* rightChild = emitLBVH(buildNodes, &mortonPrims[splitOffset], primitivesCount - splitOffset, totalNodes, orderedPrimsOffset, bitIndex - 1);
 				int axis = bitIndex % 3;
-				node->initInterior(leftChild, rightChild); //need to include axis
+				node->initInterior(axis, leftChild, rightChild); //need to include axis
 				return node;
 			}
 
@@ -407,8 +415,9 @@ struct BVHTree : IntersectionAccelerator {
 		BBox bounds;
 		unsigned primOffset;
 		unsigned secondChildOffset;
+		char splitAxis;
 
-		unsigned primitiveCount;
+		unsigned primitiveCount = 0;
 	};
 
 	unsigned MAX_PRIMS_IN_NODE = 20;
@@ -532,6 +541,15 @@ struct BVHTree : IntersectionAccelerator {
 		unsigned offset = 0;
 		flattenBVH(root, offset);
 
+		//DEBUG
+		for (size_t i = 0; i < totalNodes; i++)
+		{
+			if(nodes[i].bounds.isEmpty() && nodes[i].primitiveCount > 0)
+			{
+				printf("error at %d %d \n", i, nodes[i].primitiveCount);
+			}
+		}
+
 		printf(" done in %lldms, nodes %d\n", timer.toMs(timer.elapsedNs()), (unsigned)totalNodes);
 		tm.stop();
 	}
@@ -543,11 +561,54 @@ struct BVHTree : IntersectionAccelerator {
 	bool intersect(const Ray &ray, float tMin, float tMax, Intersection &intersection) override { 
 		//later check 7.3.5 in https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies#fragment-CreateleafmonoBVHBuildNode-0
 
-		if(!nodes->bounds.testIntersect(ray)) {
-			return false;
+		bool isDirectionNeg[3] = { (ray.dir.x < 0), (ray.dir.y < 0), (ray.dir.z < 0) };
+		unsigned toVisitCount = 0;
+		unsigned currentNodeIndx = 0;
+		unsigned nodesToVisit[64]; // do another check if we have MAX_DEPTH variable which would stop tree with depth more than 64
+
+		bool hasHit = false;
+
+		while (true) {
+			const LinearBVHNode* node = &nodes[currentNodeIndx];
+
+			if(node->bounds.testIntersect(ray)) {
+
+				if(node->primitiveCount > 0) {
+
+					for (size_t i = 0; i < node->primitiveCount; i++)
+					{
+						if (allPrimitives[node->primOffset + i]->intersect(ray, tMin, tMax, intersection)) {
+							tMax = intersection.t;
+							hasHit = true;
+						}
+					}
+
+					if (toVisitCount <= 0) {
+						break;
+					}
+
+					currentNodeIndx = nodesToVisit[--toVisitCount];
+				}
+				else {
+					if (isDirectionNeg[node->splitAxis]) {
+						nodesToVisit[toVisitCount++] = currentNodeIndx + 1;
+						currentNodeIndx = node->secondChildOffset;
+					}
+					else {
+						nodesToVisit[toVisitCount++] = node->secondChildOffset;
+						currentNodeIndx = currentNodeIndx + 1;
+					}
+				}
+			}
+			else {
+				if(toVisitCount <= 0) {
+					break;
+				}
+				currentNodeIndx = nodesToVisit[--toVisitCount];
+			}
 		}
 
-		return false;
+		return hasHit;
 	}
 
 private:
@@ -659,6 +720,12 @@ private:
 		if (nodeCount <= 1) {
 			return bvhNodes[startIndx]; 
 			//if nodeCount is 1 that would mean that start and end indices are the same, so doesn't matter which we return
+
+			//DEBUG
+			if(bvhNodes[startIndx]->bounds.isEmpty())
+			{
+				int dummy;
+			}
 		}
 		else {
 		//get the bounds of the node centers and choose a split axis based on the largest dimention
@@ -681,7 +748,7 @@ private:
 			leftChild = buildTopToBottomSAH(bvhNodes, startIndx, mid - 1);
 			rightChild = buildTopToBottomSAH(bvhNodes, mid, endIndx);
 
-			node->initInterior(leftChild, rightChild);
+			node->initInterior(splitAxis, leftChild, rightChild);
 		}
 		
 	}
@@ -691,11 +758,18 @@ private:
 		linearNode->bounds = node->bounds;
 		unsigned nodeOffset = offset++;
 
+		//DEBUG
+		if(linearNode->bounds.isEmpty())
+		{
+			printf("emty box at %d \n", offset);
+		}
+
 		if(node->primitiveCount > 0) {
 			linearNode->primOffset = node->firstIndex;
 			linearNode->primitiveCount = node->primitiveCount;
 		}
 		else {
+			linearNode->splitAxis = node->splitAxis;
 			linearNode->primitiveCount = 0;
 			flattenBVH(node->leftChild, offset);
 			linearNode->secondChildOffset = flattenBVH(node->rightChild, offset);
