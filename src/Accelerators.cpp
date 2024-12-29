@@ -317,9 +317,15 @@ struct BVHTree : IntersectionAccelerator {
 
 		void run(int threadIndex, int threadCount) override {
 
-			const unsigned perThread = count / threadCount;
-			const unsigned first = threadIndex * perThread;
-			const unsigned end = std::min((threadIndex + 1) * perThread, count);
+			unsigned perThread = count / threadCount;
+			unsigned first = threadIndex * perThread;
+			unsigned end = std::min((threadIndex + 1) * perThread, count);
+
+			//the remainder of count / threadCount is not processed so we will assign it to the last thread
+			if(threadIndex == threadCount - 1 && perThread * threadCount < count) {
+				unsigned diff = count - perThread * threadCount;
+				end += diff;
+			}
 
 			for (size_t i = first; i < end; i++) {
 
@@ -353,12 +359,6 @@ struct BVHTree : IntersectionAccelerator {
 					primitives[primitiveIndex]->expandBox(bounds);
 				}
 
-				//DEBUG
-				if(bounds.isEmpty())
-				{
-					int dummy;
-				}
-
 				node->initLeaf(firstIndex, primitivesCount, bounds);
 				return node;
 			}
@@ -380,6 +380,7 @@ struct BVHTree : IntersectionAccelerator {
 				BVHNode* node = buildNodes++;
 				BVHNode* leftChild = emitLBVH(buildNodes, mortonPrims, splitOffset, totalNodes, orderedPrimsOffset, bitIndex - 1);
 				BVHNode* rightChild = emitLBVH(buildNodes, &mortonPrims[splitOffset], primitivesCount - splitOffset, totalNodes, orderedPrimsOffset, bitIndex - 1);
+
 				int axis = bitIndex % 3;
 				node->initInterior(axis, leftChild, rightChild); //need to include axis
 				return node;
@@ -540,15 +541,6 @@ struct BVHTree : IntersectionAccelerator {
 		nodes = new LinearBVHNode[totalNodes];
 		unsigned offset = 0;
 		flattenBVH(root, offset);
-
-		//DEBUG
-		for (size_t i = 0; i < totalNodes; i++)
-		{
-			if(nodes[i].bounds.isEmpty() && nodes[i].primitiveCount > 0)
-			{
-				printf("error at %d %d \n", i, nodes[i].primitiveCount);
-			}
-		}
 
 		printf(" done in %lldms, nodes %d\n", timer.toMs(timer.elapsedNs()), (unsigned)totalNodes);
 		tm.stop();
@@ -720,12 +712,6 @@ private:
 		if (nodeCount <= 1) {
 			return bvhNodes[startIndx]; 
 			//if nodeCount is 1 that would mean that start and end indices are the same, so doesn't matter which we return
-
-			//DEBUG
-			if(bvhNodes[startIndx]->bounds.isEmpty())
-			{
-				int dummy;
-			}
 		}
 		else {
 		//get the bounds of the node centers and choose a split axis based on the largest dimention
@@ -757,12 +743,6 @@ private:
 		LinearBVHNode* linearNode = &nodes[offset];
 		linearNode->bounds = node->bounds;
 		unsigned nodeOffset = offset++;
-
-		//DEBUG
-		if(linearNode->bounds.isEmpty())
-		{
-			printf("emty box at %d \n", offset);
-		}
 
 		if(node->primitiveCount > 0) {
 			linearNode->primOffset = node->firstIndex;
