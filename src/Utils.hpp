@@ -346,6 +346,17 @@ struct BBox {
 		return (max.x - min.x) * (max.y - min.y) * (max.z - min.z);
 	}
 
+	float getArea(char excludingAxis)
+	{
+		switch (excludingAxis)
+		{
+			case 0: return (max.y - min.y) * (max.z - min.z);
+			case 1: return (max.x - min.x) * (max.z - min.z);
+			case 2: return (max.x - min.x) * (max.y - min.y);
+			default: return 0;
+		}
+	}
+
 	char getLongestSide() const {
 		float maxSide = std::max((max.x - min.x), std::max((max.y - min.y), (max.z - min.z)));
 		if (maxSide == (max.x - min.x)) return 0;

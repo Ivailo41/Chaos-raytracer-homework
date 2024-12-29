@@ -1,6 +1,7 @@
 #include "Primitive.h"
 #include "Threading.hpp"
 #include <cstring>
+#include <iostream>
 
 struct OctTree : IntersectionAccelerator {
 	struct Node {
@@ -382,7 +383,7 @@ struct BVHTree : IntersectionAccelerator {
 				BVHNode* rightChild = emitLBVH(buildNodes, &mortonPrims[splitOffset], primitivesCount - splitOffset, totalNodes, orderedPrimsOffset, bitIndex - 1);
 
 				int axis = bitIndex % 3;
-				node->initInterior(axis, leftChild, rightChild); //need to include axis
+				node->initInterior(axis, leftChild, rightChild);
 				return node;
 			}
 
@@ -472,7 +473,7 @@ struct BVHTree : IntersectionAccelerator {
 
 			//properties when building a tree for meshes
 			treePurpose = "Mesh";
-			MAX_PRIMS_IN_NODE = 20;
+			MAX_PRIMS_IN_NODE = 10;
 		}
 
 		printf("Building%s BVH tree with %d primitives... ", treePurpose, int(allPrimitives.size()));
@@ -610,23 +611,17 @@ private:
 		BBox bounds;
 	};
 
-	void partitionPrimitivesWithSAH(std::vector<BVHNode*>& bvhNodes, unsigned startIndx, unsigned endIndx, const BBox& centersBounds, char splitAxis, unsigned mid)
+	void partitionPrimitivesWithSAH(std::vector<BVHNode*>& bvhNodes, unsigned startIndx, unsigned endIndx, const BBox& centersBounds, char splitAxis, unsigned& mid)
 	{
 		unsigned nodeCount = (endIndx - startIndx) + 1;
 
 		if (nodeCount == 2) {
-			//partitioning the elements into equally sized subsets, the nth_element works for O(n) time so it would be the same as doing a for loop
-			//but the code can be reused for partitioning bigger arrays
 
-			mid = startIndx;
+			mid = endIndx;
 			if(bvhNodes[startIndx]->bounds.getCenter()[splitAxis] > bvhNodes[endIndx]->bounds.getCenter()[splitAxis])
 			{
 				std::swap(bvhNodes[startIndx], bvhNodes[endIndx]);
 			}
-
-			/*mid = startIndx + nodeCount / 2;
-			std::nth_element(bvhNodes[startIndx], bvhNodes[startIndx + mid], bvhNodes[endIndx], 
-				[splitAxis](const BVHNode& a, const BVHNode& b) { return a.bounds.getCenter()[splitAxis] < a.bounds.getCenter()[splitAxis]; });*/
 		}
 		else {
 			//initialize buckets with which we will check the best splitting position
@@ -652,7 +647,7 @@ private:
 			for (size_t i = 0; i < SPLITS; i++) {
 				boundsBelow.add(buckets[i].bounds);
 				countBelow += buckets[i].count;
-				costs[i] += countBelow * boundsBelow.getVolume();
+				costs[i] += countBelow * boundsBelow.getArea(splitAxis);
 			}
 
 			unsigned countAbove = 0;
@@ -661,7 +656,7 @@ private:
 			for (size_t i = SPLITS; i >= 1; i--) {
 				boundsAbove.add(buckets[i].bounds);
 				countAbove += buckets[i].count;
-				costs[i - 1] += countAbove * boundsAbove.getVolume();
+				costs[i - 1] += countAbove * boundsAbove.getArea(splitAxis);
 			}
 
 			//find bucket with minimum cost to split at
@@ -684,11 +679,10 @@ private:
 					if (bucket == BUCKET_COUNT) bucket = BUCKET_COUNT - 1;
 					return bucket <= minCostBucket;
 					});
-				mid = midNode - bvhNodes.begin();
 			}
 			//this might not get through as the nodeCount is checked before calling the function
 			else {
-				mid = startIndx;
+				mid = endIndx;
 			}
 		}
 	}
@@ -704,14 +698,13 @@ private:
 
 		//get bounds of the nodes
 		BBox bounds;
-		for (size_t i = startIndx; i < endIndx + 1; i++) {
+		for (size_t i = startIndx; i <= endIndx; i++) {
 			bounds.add(bvhNodes[i]->bounds);
 		}
 
 		//if nodes size is 1 make a leaf
 		if (nodeCount <= 1) {
 			return bvhNodes[startIndx]; 
-			//if nodeCount is 1 that would mean that start and end indices are the same, so doesn't matter which we return
 		}
 		else {
 		//get the bounds of the node centers and choose a split axis based on the largest dimention
@@ -732,11 +725,13 @@ private:
 			BVHNode* rightChild = nullptr;
 
 			leftChild = buildTopToBottomSAH(bvhNodes, startIndx, mid - 1);
+
 			rightChild = buildTopToBottomSAH(bvhNodes, mid, endIndx);
 
 			node->initInterior(splitAxis, leftChild, rightChild);
 		}
-		
+
+		return node;
 	}
 
 	unsigned flattenBVH(BVHNode* node, unsigned& offset) { 
