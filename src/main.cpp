@@ -219,11 +219,11 @@ int main(int argc, char *argv[]) {
 	const int sceneCount = std::size(sceneCreators);
 	int renderCount = sceneCount;
 	int firstScene = 0;
-	if (argc == 1) {
+	if (argc == 1 && false) {
 		renderCount = 1;
 		puts("No arguments, will render only example scene");
 	} else {
-		const int arg = atoi(argv[1]);
+		const int arg = -1; //atoi(argv[1]);
 		if (arg == -1) {
 			renderCount = sceneCount;
 			firstScene = 0;

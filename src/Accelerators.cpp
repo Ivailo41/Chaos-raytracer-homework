@@ -2,6 +2,7 @@
 #include "Threading.hpp"
 #include <cstring>
 #include <iostream>
+#include <fstream>
 
 struct OctTree : IntersectionAccelerator {
 	struct Node {
@@ -544,8 +545,50 @@ struct BVHTree : IntersectionAccelerator {
 		flattenBVH(root, offset);
 
 		printf(" done in %lldms, nodes %d\n", timer.toMs(timer.elapsedNs()), (unsigned)totalNodes);
+		//levelOrder(root); This function was for debugging the bounds of the tree by exporting them in a file and reading them in blender to better visualise
 		tm.stop();
 	}
+
+	// Helper function for recursive level order traversal
+	void levelOrderRec(const BVHNode* root, int level, std::vector<std::vector<const BVHNode*>>& res) {
+		// Base case: If node is null, return
+		if (root == nullptr) return;
+
+		// Add a new level to the result if needed
+		if (res.size() <= level)
+			res.push_back({});
+
+		// Add current node's data to its corresponding level
+		res[level].push_back(root);
+
+		// Recur for left and right children
+		levelOrderRec(root->leftChild, level + 1, res);
+		levelOrderRec(root->rightChild, level + 1, res);
+	}
+
+	// Function to perform level order traversal
+	void levelOrder(const BVHNode* root) {
+		// Stores the result level by level
+		std::vector<std::vector<const BVHNode*>> res;
+
+		std::ofstream file("Bounds.txt");
+
+		levelOrderRec(root, 0, res);
+
+		for (size_t i = 0; i < res.size(); i++)
+		{
+			//printf("Level %d\n", i);
+			file << "Level " << i << '\n';
+			for (size_t j = 0; j < res[i].size(); j++)
+			{
+				//printf("min %f %f %f : max %f %f %f\n", res[i][j]->bounds.min.x, res[i][j]->bounds.min.y, res[i][j]->bounds.min.z, res[i][j]->bounds.max.x, res[i][j]->bounds.max.y, res[i][j]->bounds.max.z);
+				file << "min " << res[i][j]->bounds.min.x << ' ' << res[i][j]->bounds.min.y << ' ' << res[i][j]->bounds.min.z << " : max " << res[i][j]->bounds.max.x << ' ' << res[i][j]->bounds.max.y << ' ' << res[i][j]->bounds.max.z << '\n';
+			}
+		}
+
+		file.close();
+	}
+
 
 	bool isBuilt() const override { 
 		return root != nullptr;
@@ -664,21 +707,22 @@ private:
 			float minCost = INFINITY;
 
 			for (size_t i = 0; i < SPLITS; i++) {
-				if(costs[i] < minCost) {
+				if(costs[i] <= minCost) {
 					minCost = costs[i];
 					minCostBucket = i;
 				}
 			}
 
-			float leafCost = nodeCount;
-			minCost = 1.f / 2.f + minCost / centersBounds.getVolume();
+			//float leafCost = nodeCount;
+			//minCost = 1.f / 2.f + minCost / centersBounds.getVolume();
 
 			if(nodeCount > 1) {
-				auto midNode = std::partition(bvhNodes.begin() + startIndx, bvhNodes.begin() + endIndx, [=](BVHNode* node) {
+				auto midNode = std::partition(bvhNodes.begin() + startIndx, bvhNodes.begin() + endIndx + 1, [=](BVHNode* node) {
 					int bucket = BUCKET_COUNT * centersBounds.Offset(node->bounds.getCenter())[splitAxis];
 					if (bucket == BUCKET_COUNT) bucket = BUCKET_COUNT - 1;
 					return bucket <= minCostBucket;
 					});
+				mid = std::distance(bvhNodes.begin(), midNode);
 			}
 			//this might not get through as the nodeCount is checked before calling the function
 			else {
