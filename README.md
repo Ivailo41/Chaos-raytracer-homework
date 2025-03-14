@@ -2,6 +2,14 @@
 This project is an assignment from the Chaos algorithmic course.
 The task is to build a better accelerator structure than the given Octree to optimize the render time of the ray tracer.
 
+# My implementation
+I used the BVH tree accelerator structure, which can be found inside src/Accelerators.cpp
+```c++
+struct BVHTree : IntersectionAccelerator {
+...
+}
+```
+
 # This repo is a fork of urban-spork
 
 Tiny raytracer used for base code for intersection acceleration structures
